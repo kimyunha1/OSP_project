@@ -15,11 +15,17 @@ DISTRACTION_TIME = 2.0
 CALIBRATION_TIME = 3.0
 EAR_RATIO = 0.8
 
-YAW_THRESHOLD = 20
-PITCH_THRESHOLD = 20
+YAW_THRESHOLD = 25
+PITCH_THRESHOLD = 25
 
 ear_threshold = None
 ear_values = []
+yaw_values = []
+pitch_values = []
+
+yaw_baseline = None
+pitch_baseline = None
+
 calibration_start_time = time.time()
 
 sleep_start_time = None
@@ -48,24 +54,22 @@ def calculate_mar(landmarks):
     return distance(upper, lower) / distance(left, right)
 
 def calculate_head_pose(landmarks, frame_width, frame_height):
-    # 2D image points from MediaPipe landmarks
     image_points = np.array([
-        (landmarks[1].x * frame_width, landmarks[1].y * frame_height),       # nose tip
-        (landmarks[152].x * frame_width, landmarks[152].y * frame_height),   # chin
-        (landmarks[33].x * frame_width, landmarks[33].y * frame_height),     # left eye corner
-        (landmarks[263].x * frame_width, landmarks[263].y * frame_height),   # right eye corner
-        (landmarks[61].x * frame_width, landmarks[61].y * frame_height),     # left mouth corner
-        (landmarks[291].x * frame_width, landmarks[291].y * frame_height)    # right mouth corner
+        (landmarks[1].x * frame_width, landmarks[1].y * frame_height),
+        (landmarks[152].x * frame_width, landmarks[152].y * frame_height),
+        (landmarks[33].x * frame_width, landmarks[33].y * frame_height),
+        (landmarks[263].x * frame_width, landmarks[263].y * frame_height),
+        (landmarks[61].x * frame_width, landmarks[61].y * frame_height),
+        (landmarks[291].x * frame_width, landmarks[291].y * frame_height)
     ], dtype="double")
 
-    # Approximate 3D face model points
     model_points = np.array([
-        (0.0, 0.0, 0.0),             # nose tip
-        (0.0, -63.6, -12.5),         # chin
-        (-43.3, 32.7, -26.0),        # left eye corner
-        (43.3, 32.7, -26.0),         # right eye corner
-        (-28.9, -28.9, -24.1),       # left mouth corner
-        (28.9, -28.9, -24.1)         # right mouth corner
+        (0.0, 0.0, 0.0),
+        (0.0, -63.6, -12.5),
+        (-43.3, 32.7, -26.0),
+        (43.3, 32.7, -26.0),
+        (-28.9, -28.9, -24.1),
+        (28.9, -28.9, -24.1)
     ])
 
     focal_length = frame_width
@@ -87,27 +91,39 @@ def calculate_head_pose(landmarks, frame_width, frame_height):
         flags=cv2.SOLVEPNP_ITERATIVE
     )
 
+    if not success:
+        return 0, 0, 0
+
     rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
     angles, _, _, _, _, _ = cv2.RQDecomp3x3(rotation_matrix)
 
     pitch = angles[0]
-    yaw = angles[1]
+    yaw = -angles[1]
     roll = angles[2]
+
+    # pitch가 ±180도 근처로 튀는 경우를 0도 기준으로 보정
+    if pitch < -90:
+        pitch += 180
+    elif pitch > 90:
+        pitch -= 180
 
     return pitch, yaw, roll
 
-def judge_state(ear, mar, yaw, pitch):
+def judge_state(ear, mar, adjusted_yaw, adjusted_pitch):
     global sleep_start_time, yawn_start_time, distraction_start_time
 
     current_time = time.time()
-    state = "normal"
+
+    sleep_detected = False
+    yawn_detected = False
+    distraction_detected = False
 
     if ear < ear_threshold:
         if sleep_start_time is None:
             sleep_start_time = current_time
 
         if current_time - sleep_start_time >= SLEEP_TIME:
-            state = "sleep"
+            sleep_detected = True
     else:
         sleep_start_time = None
 
@@ -116,20 +132,27 @@ def judge_state(ear, mar, yaw, pitch):
             yawn_start_time = current_time
 
         if current_time - yawn_start_time >= YAWN_TIME:
-            state = "yawn"
+            yawn_detected = True
     else:
         yawn_start_time = None
 
-    if abs(yaw) > YAW_THRESHOLD or abs(pitch) > PITCH_THRESHOLD:
+    if abs(adjusted_yaw) > YAW_THRESHOLD or abs(adjusted_pitch) > PITCH_THRESHOLD:
         if distraction_start_time is None:
             distraction_start_time = current_time
 
         if current_time - distraction_start_time >= DISTRACTION_TIME:
-            state = "distraction"
+            distraction_detected = True
     else:
         distraction_start_time = None
 
-    return state
+    if sleep_detected:
+        return "sleep"
+    elif yawn_detected:
+        return "yawn"
+    elif distraction_detected:
+        return "distraction"
+    else:
+        return "normal"
 
 cap = cv2.VideoCapture(0)
 
@@ -155,7 +178,10 @@ while True:
 
         if ear_threshold is None:
             elapsed_time = time.time() - calibration_start_time
+
             ear_values.append(ear)
+            yaw_values.append(yaw)
+            pitch_values.append(pitch)
 
             cv2.putText(frame, "Calibrating... Look straight normally", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
@@ -166,10 +192,21 @@ while True:
             if elapsed_time >= CALIBRATION_TIME:
                 avg_ear = np.mean(ear_values)
                 ear_threshold = avg_ear * EAR_RATIO
-                print(f"Calibration complete. Average EAR: {avg_ear:.3f}, EAR_THRESHOLD: {ear_threshold:.3f}")
+
+                yaw_baseline = np.mean(yaw_values)
+                pitch_baseline = np.mean(pitch_values)
+
+                print("Calibration complete")
+                print(f"Average EAR: {avg_ear:.3f}")
+                print(f"EAR_THRESHOLD: {ear_threshold:.3f}")
+                print(f"YAW_BASELINE: {yaw_baseline:.3f}")
+                print(f"PITCH_BASELINE: {pitch_baseline:.3f}")
 
         else:
-            state = judge_state(ear, mar, yaw, pitch)
+            adjusted_yaw = yaw - yaw_baseline
+            adjusted_pitch = pitch - pitch_baseline
+
+            state = judge_state(ear, mar, adjusted_yaw, adjusted_pitch)
 
             cv2.putText(frame, f"EAR: {ear:.2f}", (30, 40),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
@@ -180,10 +217,10 @@ while True:
             cv2.putText(frame, f"MAR: {mar:.2f}", (30, 110),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            cv2.putText(frame, f"YAW: {yaw:.1f}", (30, 145),
+            cv2.putText(frame, f"YAW: {adjusted_yaw:.1f}", (30, 145),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-            cv2.putText(frame, f"PITCH: {pitch:.1f}", (30, 180),
+            cv2.putText(frame, f"PITCH: {adjusted_pitch:.1f}", (30, 180),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
             cv2.putText(frame, f"ROLL: {roll:.1f}", (30, 215),
