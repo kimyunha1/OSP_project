@@ -15,6 +15,9 @@ DISTRACTION_TIME = 2.0
 CALIBRATION_TIME = 3.0
 EAR_RATIO = 0.8
 
+YAW_THRESHOLD = 20
+PITCH_THRESHOLD = 20
+
 ear_threshold = None
 ear_values = []
 calibration_start_time = time.time()
@@ -34,8 +37,7 @@ def calculate_ear(landmarks):
     p5 = landmarks[153]
     p6 = landmarks[144]
 
-    ear = (distance(p2, p6) + distance(p3, p5)) / (2 * distance(p1, p4))
-    return ear
+    return (distance(p2, p6) + distance(p3, p5)) / (2 * distance(p1, p4))
 
 def calculate_mar(landmarks):
     left = landmarks[61]
@@ -43,30 +45,58 @@ def calculate_mar(landmarks):
     upper = landmarks[13]
     lower = landmarks[14]
 
-    mar = distance(upper, lower) / distance(left, right)
-    return mar
+    return distance(upper, lower) / distance(left, right)
 
-def calculate_head_direction(landmarks):
-    nose = landmarks[1]
-    left_face = landmarks[234]
-    right_face = landmarks[454]
+def calculate_head_pose(landmarks, frame_width, frame_height):
+    # 2D image points from MediaPipe landmarks
+    image_points = np.array([
+        (landmarks[1].x * frame_width, landmarks[1].y * frame_height),       # nose tip
+        (landmarks[152].x * frame_width, landmarks[152].y * frame_height),   # chin
+        (landmarks[33].x * frame_width, landmarks[33].y * frame_height),     # left eye corner
+        (landmarks[263].x * frame_width, landmarks[263].y * frame_height),   # right eye corner
+        (landmarks[61].x * frame_width, landmarks[61].y * frame_height),     # left mouth corner
+        (landmarks[291].x * frame_width, landmarks[291].y * frame_height)    # right mouth corner
+    ], dtype="double")
 
-    face_center_x = (left_face.x + right_face.x) / 2
-    face_width = abs(right_face.x - left_face.x)
+    # Approximate 3D face model points
+    model_points = np.array([
+        (0.0, 0.0, 0.0),             # nose tip
+        (0.0, -63.6, -12.5),         # chin
+        (-43.3, 32.7, -26.0),        # left eye corner
+        (43.3, 32.7, -26.0),         # right eye corner
+        (-28.9, -28.9, -24.1),       # left mouth corner
+        (28.9, -28.9, -24.1)         # right mouth corner
+    ])
 
-    if face_width == 0:
-        return "front"
+    focal_length = frame_width
+    center = (frame_width / 2, frame_height / 2)
 
-    nose_offset = (nose.x - face_center_x) / face_width
+    camera_matrix = np.array([
+        [focal_length, 0, center[0]],
+        [0, focal_length, center[1]],
+        [0, 0, 1]
+    ], dtype="double")
 
-    if nose_offset > 0.12:
-        return "left"
-    elif nose_offset < -0.12:
-        return "right"
-    else:
-        return "front"
+    dist_coeffs = np.zeros((4, 1))
 
-def judge_state(ear, mar, head_direction):
+    success, rotation_vector, translation_vector = cv2.solvePnP(
+        model_points,
+        image_points,
+        camera_matrix,
+        dist_coeffs,
+        flags=cv2.SOLVEPNP_ITERATIVE
+    )
+
+    rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
+    angles, _, _, _, _, _ = cv2.RQDecomp3x3(rotation_matrix)
+
+    pitch = angles[0]
+    yaw = angles[1]
+    roll = angles[2]
+
+    return pitch, yaw, roll
+
+def judge_state(ear, mar, yaw, pitch):
     global sleep_start_time, yawn_start_time, distraction_start_time
 
     current_time = time.time()
@@ -90,7 +120,7 @@ def judge_state(ear, mar, head_direction):
     else:
         yawn_start_time = None
 
-    if head_direction != "front":
+    if abs(yaw) > YAW_THRESHOLD or abs(pitch) > PITCH_THRESHOLD:
         if distraction_start_time is None:
             distraction_start_time = current_time
 
@@ -111,6 +141,7 @@ while True:
         break
 
     frame = cv2.flip(frame, 1)
+    height, width, _ = frame.shape
 
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     result = face_mesh.process(rgb)
@@ -120,7 +151,7 @@ while True:
 
         ear = calculate_ear(landmarks)
         mar = calculate_mar(landmarks)
-        head_direction = calculate_head_direction(landmarks)
+        pitch, yaw, roll = calculate_head_pose(landmarks, width, height)
 
         if ear_threshold is None:
             elapsed_time = time.time() - calibration_start_time
@@ -138,21 +169,27 @@ while True:
                 print(f"Calibration complete. Average EAR: {avg_ear:.3f}, EAR_THRESHOLD: {ear_threshold:.3f}")
 
         else:
-            state = judge_state(ear, mar, head_direction)
+            state = judge_state(ear, mar, yaw, pitch)
 
             cv2.putText(frame, f"EAR: {ear:.2f}", (30, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            cv2.putText(frame, f"EAR_TH: {ear_threshold:.2f}", (30, 80),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(frame, f"EAR_TH: {ear_threshold:.2f}", (30, 75),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            cv2.putText(frame, f"MAR: {mar:.2f}", (30, 120),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(frame, f"MAR: {mar:.2f}", (30, 110),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-            cv2.putText(frame, f"HEAD: {head_direction}", (30, 160),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            cv2.putText(frame, f"YAW: {yaw:.1f}", (30, 145),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-            cv2.putText(frame, f"STATE: {state}", (30, 200),
+            cv2.putText(frame, f"PITCH: {pitch:.1f}", (30, 180),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+
+            cv2.putText(frame, f"ROLL: {roll:.1f}", (30, 215),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
+
+            cv2.putText(frame, f"STATE: {state}", (30, 260),
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     cv2.imshow("EAR MAR Detection", frame)
