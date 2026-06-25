@@ -35,13 +35,21 @@
 python main.py
 
 Core File Structure (주요 파일 구조)
+
 이 시스템은 마스터 시스템을 중심으로 각 모듈이 독립적이고 유기적으로 작동하도록 설계되었습니다.
+
 main.py: 시스템의 메인 허브 엔진으로, 실시간 영상 스트리밍(OpenCV)을 제어하고 상태 트래킹 인터페이스를 총괄합니다.
+
 ear_mar_detection.py: MediaPipe Face Mesh를 활용하여 운전자의 눈(EAR) 및 입(MAR)의 상태, 안면 각도(Head Pose)를 산출해 냅니다.
+
 detect_danger.py: ONNX Runtime 최적화 엔진 환경을 통해 주행 중 스마트폰 사용등의 위험 객체를 실시간으로 정밀 탐지합니다.
+
 alert.py: 탐지된 위험 등급에 따라 시청각 경고(Pillow 한글 경고문, winsound 비프음 및 pyttsx3 음성 안내)를 비동기 백그라운드 스레드로 처리합니다.
+
 ◦ Execution Results (실행 결과 예시)
 프로그램이 정상 구동된 웹캠 화면 
+
+
 <img width="863" height="665" alt="image" src="https://github.com/user-attachments/assets/3cccbdae-9340-437c-afb6-9fe525a28bd2" />
 <img width="861" height="673" alt="image" src="https://github.com/user-attachments/assets/fb0592ac-8c1d-4c63-b4e1-f937fb5342a1" />
 <img width="861" height="635" alt="image" src="https://github.com/user-attachments/assets/5f5dcefa-06bc-44c1-b050-6a75b83462d6" />
